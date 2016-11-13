@@ -52,14 +52,16 @@ union Key {
 	block key;
 } decKey;
 
-template<T>
+template<typename T>
 class Signal {
-	std::condition_variable cv;
-	T var;
-	std::mutex mu;
+	std::condition_variable&& cv;
+	std::mutex&& mu;
+	T&& var;
+	std::function<void(T&)> finalizer;
 
 public:
-	Signal(std::condition_variable cv, T v, std::mutex m):cv(cv),var(v),mu(m){}
+	Signal(std::condition_variable&& cv, std::mutex&& m, T&& v):cv(std::move(cv)),mu(std::move(m)),var(std::move(v)){}
+	Signal(T&& v):cv(std::move(std::condition_variable())),mu(std::move(std::mutex())),var(std::move(v)){}
 
 	void notify_one() {
 		cv.notify_one();
@@ -69,19 +71,30 @@ public:
 		cv.notify_all();
 	}
 
-	void wait() {
+	void wait(std::function<bool(T&)> f) {
 		std::unique_lock<std::mutex> lock(mu);
-		cv.wait(lock, [] {return f(var); });
+		cv.wait(lock,[&f,this]{return f(this->var); });
+	}
+	void wait() {
+		wait([](auto& v) {return !!v; });
 	}
 
-	template<void(T&)>
-	exec(f) {
+	void exec(std::function<void(T&)> f) {
 		std::lock_guard<std::mutex> lock(mu);
 		f(var);
 	}
 
-	T get() {
+	void set(T&& newVal) {
+		std::lock_guard<std::mutex> lock(mu);
+		var = newVal;
+	}
+
+	T& get() {
 		return var;
+	}
+
+	~Signal() {
+		finalizer(var);
 	}
 
 };
@@ -107,45 +120,57 @@ auto fill(std::unique_ptr<Encryptor>& enc, Key lastKey) {
 
 auto find(std::unique_ptr<Encryptor> dec,
 			unsigned int offset,
-			unsigned int increment,
+			const unsigned int increment,
 
-			//Signal& run,
-			bool* wantFind,
-			std::condition_variable* timeTofind,
-			std::mutex* timeToFindMutex,
-			//Signal& stop,
-			//std::condition_variable 
+			Signal<bool>* wantFind,
 
-			std::promise<DataType>* result,
-			//should be atomic as we read and write it
-			//in multiple threads
-			//Signal& success,
-			std::atomic_bool* found) {
+			//contains find success flag and
+			//number of finished threads
+			//decremented after end of find
+			Signal<std::pair<std::atomic_bool, unsigned int>>* stop,
+			
+			//here result is stored
+			std::promise<DataType>* result) {
 	std::stringstream ss;
 	decltype(firstStage)::const_iterator resIt;
+
 	while (true) {
 		decKey._key = 0ul;
-		std::unique_lock<std::mutex> lock(*timeToFindMutex);
-		timeTofind->wait(lock, [wantFind] {return *wantFind; });
+		wantFind->wait();
+
 		auto end = firstStage.end();
-
-		while (!found && decKey._key < std::numeric_limits<lblock>::max() && resIt == end) {
-			decKey._key+=offset;
-			dec->key(DataType(&decKey.key[0], &decKey.key[decKey.key.size()]));
-			dec->decrypt();
-			dec->write(ss);
-			auto decryptionResult = ss.str();
-			resIt = firstStage.find(DataType(decryptionResult.begin(), decryptionResult.end()));
+		try {
+			while (!stop->get().first && decKey._key < std::numeric_limits<lblock>::max() && resIt == end) {
+				decKey._key += offset;
+				dec->key(DataType(&decKey.key[0], &decKey.key[decKey.key.size()]));
+				dec->decrypt();
+				dec->write(ss);
+				auto decryptionResult = ss.str();
+				resIt = firstStage.find(DataType(decryptionResult.begin(), decryptionResult.end()));
+			}
+			if (stop->get().first) {
+				stop->exec([](auto& p) {p.second++; });
+				stop->notify_one();
+				return;
+			}
+			if (resIt != end) {
+				auto res = resIt->second;
+				result->set_value(DataType(res.cbegin(), res.cend()));
+				stop->exec([](auto& p) {p.first = true; p.second++; });
+				//here we notify only controlling thread
+				//as workers does not sleep on this condition variable
+				stop->notify_one();
+				return;
+			}
 		}
-		if (found) {
-
-			return;
-		}
-		if (resIt != end) {
-			found->store(true);
-			auto res = resIt->second;
-			result->set_value(DataType(res.cbegin(), res.cend()));
-			return;
+		catch (...) {
+			try {
+				result->set_exception(std::current_exception());
+				//notify that we find exception))
+				stop->exec([](auto& p) {p.first=true; });
+				stop->notify_one();
+			}
+			catch (...) {}
 		}
 	}
 }
@@ -154,6 +179,7 @@ auto crack_impl(std::string& plaintext, std::string& ciphertext) {
 	DataType key(8);
 	auto enc = getEncryptor(Encryption::DES);
 
+	//read only first block
 	std::istringstream plaint(std::string(plaintext, 0, 8)), ciphert(std::string(ciphertext, 0, 8));
 	enc->read(plaint);
 
@@ -161,21 +187,10 @@ auto crack_impl(std::string& plaintext, std::string& ciphertext) {
 	lastKey._key = 0UL;
 
 	//find must start flag
-	std::atomic_bool wantFind = false;
-	std::mutex wantFindMutex;
-	std::condition_variable timeToFind;
+	Signal<bool> wantFind(std::condition_variable(), std::mutex(), false);
 
-	//find success flag
-	std::atomic_bool findSuccess(false);
-
-	//number of finished threads
-	unsigned int finishedThreads=0;
-	//mutex to protect finishedThreads
-	std::mutex findEndsMutex;
-	//we have only one condition variable
-	//as finished thread always notify it
-	//regardless of it failed or succeed
-	std::condition_variable findEnds;
+	//find success flag and number of finished threads
+	Signal<std::pair<std::atomic_bool, unsigned int>> findEnds(std::make_pair(std::atomic_bool(false),0u));
 
 	//find result
 	std::promise<DataType> result;
@@ -188,85 +203,30 @@ auto crack_impl(std::string& plaintext, std::string& ciphertext) {
 		for (size_t i = 0; i < threads.size(); ++i) {
 			auto dec = getEncryptor(Encryption::DES);
 			dec->read(ciphert);
-			threads[i] = std::thread(find, std::move(dec), i, num_threads, &wantFind, &timeToFind, &wantFindMutex, &result, &findSuccess);
+			threads[i] = std::thread(find, std::move(dec), i, num_threads, &wantFind, &findEnds, &result);
 		}
 	}
 
-	while (!findSuccess) {
-		//prepare data before find
-		findSuccess = false;
-		finishedThreads = 0;
-		lastKey=fill(enc, lastKey);
-		{
-			std::unique_lock<std::mutex> lock(wantFindMutex);
-			wantFind = true;
+	while (true) {
+
+		while (!findEnds.get().first) {
+			//prepare data before find
+			findEnds.exec([](auto& pair) {pair.first = pair.second = 0; });
+			lastKey = fill(enc, lastKey);
+			wantFind.set(true);
+			//run workers
+			wantFind.notify_all();
+			//sleep until find end
+			findEnds.wait([&threads](auto& p) {return p.first || p.second == threads.size(); });
 		}
-		//run workers
-		timeToFind.notify_all();
-		std::unique_lock<std::mutex> lock(findEndsMutex);
-		//sleep until find end
-		findEnds.wait(lock, [&finishedThreads, &threads, &findSuccess] {return finishedThreads == threads.size() || findSuccess; });
-	}
 
-	auto res = result.get_future().get();
-	std::cout << std::hex << res.data();
-
-	std::istringstream plaint(std::string(plaintext, 0, 8)), ciphert(std::string(ciphertext, 0, 8));
-	enc->read(plaint);
-	dec->read(ciphert);
-
-	std::ostringstream encrypted, decrypted;
-	try {
-		do {
-			encrypted.seekp(0);
-			encrypted.clear();
-			decrypted.seekp(0);
-			decrypted.clear();
-			generate();
-			enc->key(key);
-			dec->key(key);
-			enc->encrypt();
-			dec->decrypt();
-			enc->write(encrypted);
-			dec->write(decrypted);
-		} while (encrypted.str() != decrypted.str() && !findSuccess->load() && !realKey(plaintext, ciphertext, key));
-		findSuccess->store(true);
-		result->set_value(key);
-		//encrypted.seekp(0);
-		//encrypted.clear();
-		//decrypted.seekp(0);
-		//decrypted.clear();
-		//
-		//plaint.seekg(0);
-		//plaint.clear();
-
-		//ciphert.seekg(0);
-		//ciphert.clear();
-
-		//plaint.read(&plaintext[8], plaintext.size() - 8);
-		//ciphert.read(&ciphertext[8], ciphertext.size() - 8);
-
-		//enc->read(plaint);
-		//dec->read(ciphert);
-
-		//enc->encrypt();
-		//dec->decrypt();
-
-		//enc->write(encrypted);
-		//dec->write(decrypted);
-
-		//if (encrypted.str() == decrypted.str()) {
-		//	done->store(true);
-		//	result->set_value(key);
-		//}
-	}
-	catch (...) {
-		try {
-			result->set_exception(std::current_exception());
-			findSuccess->store(true);
+		auto res = result.get_future().get();
+		if (realKey(plaintext, ciphertext, res)) {
+			std::cout << std::hex << res.data();
+			break;
 		}
-		catch(...){}
 	}
+
 }
 
 void main(int argc, char* argv[]) {
@@ -331,7 +291,7 @@ void main(int argc, char* argv[]) {
 
 	if (mt) {
 		std::cout << "---------MULTITHREAD-----------" << std::endl;
-		crack_impl();
+		crack_impl(message, ciphertext);
 	}
 	else
 	{
