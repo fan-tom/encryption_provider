@@ -134,11 +134,11 @@ auto find(std::unique_ptr<Encryptor> dec,
 	std::stringstream ss;
 	decltype(firstStage)::const_iterator resIt;
 
+	auto end = firstStage.end();
 	while (true) {
 		decKey._key = 0ul;
 		wantFind->wait();
 
-		auto end = firstStage.end();
 		try {
 			while (!stop->get().first && decKey._key < std::numeric_limits<lblock>::max() && resIt == end) {
 				decKey._key += offset;
@@ -190,7 +190,7 @@ auto crack_impl(std::string& plaintext, std::string& ciphertext) {
 	Signal<bool> wantFind(std::condition_variable(), std::mutex(), false);
 
 	//find success flag and number of finished threads
-	Signal<std::pair<std::atomic_bool, unsigned int>> findEnds(std::make_pair(std::atomic_bool(false),0u));
+	Signal<std::pair<std::atomic_bool, unsigned int>> findEnds(/*std::condition_variable(), std::mutex(),*/ std::make_pair(false,0u));
 
 	//find result
 	std::promise<DataType> result;
@@ -256,7 +256,7 @@ void main(int argc, char* argv[]) {
 	plaintext << message;
 	des->read(plaintext);
 	
-	auto key = DataType({1,2,3,4,5,6,7,8});
+	auto key = DataType({1,2,3,4,5,6,7,8/*,9,0xA,0xB,0xC,0xD,0xE,0xF,0*/});
 
 	des->key(key);
 	des->encrypt();
