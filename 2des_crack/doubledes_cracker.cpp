@@ -1,13 +1,14 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
-#include <crypt.h>
 #include <atomic>
 #include <thread>
 #include <future>
 #include <map>
 #include <array>
 #include <limits>
+
+#include <crypt.h>
 
 class thread_joiner {
 	std::vector<std::thread>& threads;
@@ -230,7 +231,7 @@ auto crack_impl(std::string& plaintext, std::string& ciphertext) {
 }
 
 void main(int argc, char* argv[]) {
-	auto des = getEncryptor(Encryption::DES);
+	auto enc = getEncryptor(Encryption::RC4);
 	if (argc < 2) {
 		std::cout << "Please, specify path to file" << std::endl;
 		std::exit(1);
@@ -254,38 +255,38 @@ void main(int argc, char* argv[]) {
 	std::cout << "Message:" << message << std::endl<<std::endl;
 	std::stringstream plaintext;
 	plaintext << message;
-	des->read(plaintext);
+	enc->read(plaintext);
 	
 	auto key = DataType({1,2,3,4,5,6,7,8/*,9,0xA,0xB,0xC,0xD,0xE,0xF,0*/});
 
-	des->key(key);
-	des->encrypt();
+	enc->key(key);
+	enc->encrypt();
 	std::stringstream cts;
-	des->write(cts);
-	des->read(cts);
-	des->encrypt();
+	enc->write(cts);
+	enc->read(cts);
+	enc->encrypt();
 
 	std::stringstream().swap(cts);
 	cts.clear();
 
-	des->write(cts);
+	enc->write(cts);
 	std::string ciphertext=cts.str();
 	std::cout << ciphertext;
 
-	des->read(cts);
+	enc->read(cts);
 
 	std::stringstream().swap(cts);
 	cts.clear();
 
-	des->decrypt();
-	des->write(cts);
-	des->read(cts);
-	des->decrypt();
+	enc->decrypt();
+	enc->write(cts);
+	enc->read(cts);
+	enc->decrypt();
 
 	std::stringstream().swap(cts);
 	cts.clear();
 
-	des->write(cts);
+	enc->write(cts);
 	
 	std::cout << cts.str();
 

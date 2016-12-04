@@ -1,0 +1,9 @@
+# git ignore file
+openssl*
+Debug/
+Release/
+*.vcxproj
+*.vcxproj*
+*.VC.*
+.vs/
+*.sln

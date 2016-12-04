@@ -5,7 +5,8 @@
 enum class Encryption {
 	OTP,
 	AES,
-	DES
+	DES,
+	RC4
 };
 
 std::unique_ptr<Encryptor> getEncryptor(Encryption);
