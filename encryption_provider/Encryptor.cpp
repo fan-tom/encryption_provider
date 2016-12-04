@@ -24,6 +24,6 @@ void Encryptor::key(const DataType& key) {
 		throw std::exception("Wrong key");
 }
 
-DataType Encryptor::key() const {
+const DataType& Encryptor::key() const {
 	return _key;
 }

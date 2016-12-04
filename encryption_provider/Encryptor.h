@@ -22,7 +22,7 @@ private:
 
 public:
 	void key(const DataType& key);
-	DataType key() const;
+	const DataType& key() const;
 	void read(std::istream& input);
 	void write(std::ostream& out);
 	void encrypt();
