@@ -6,6 +6,7 @@ enum class Encryption {
 	OTP,
 	AES,
 	DES,
+	DES2,
 	RC4
 };
 

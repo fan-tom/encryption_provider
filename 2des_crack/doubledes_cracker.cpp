@@ -57,7 +57,7 @@ std::string form_key(const DataType& key) {
 using ulonglong = unsigned long long;
 using block = std::array<unsigned char, 8>;
 
-const ulonglong MAX_KEY = (1ull << 24);
+const ulonglong MAX_KEY = (1ull << 26);
 
 //key-encryption result
 //value-key
@@ -297,22 +297,22 @@ auto crack_impl(std::string& plaintext, std::string& ciphertext, size_t thread_n
 }
 
 void main(int argc, char* argv[]) {
-	auto enc = getEncryptor(Encryption::DES);
+	auto enc = getEncryptor(Encryption::DES2);
 	if (argc < 2) {
 		std::cout << "Please, specify path to file and key" << std::endl;
 		std::exit(1);
 	}
-	if (argc < 4) {
+	if (argc < 3) {
 		std::cout << "Please, specify keys" << std::endl;
 		std::exit(1);
 	}
 	std::cout << "Path to file: " << argv[1] << std::endl;
 	auto file = std::ifstream(argv[1], std::ios::in|std::ios::binary);
-	std::cout << "Keys: " << argv[2] << argv[3] << std::endl;
-	DataType key1((std::istream_iterator<int>(std::stringstream(argv[2]))),
+	std::cout << "Key: " << argv[2] << std::endl;
+	DataType key((std::istream_iterator<int>(std::stringstream(argv[2]))),
 							std::istream_iterator<int>());
-	DataType key2((std::istream_iterator<int>(std::stringstream(argv[3]))),
-							std::istream_iterator<int>());
+	//DataType key2((std::istream_iterator<int>(std::stringstream(argv[3]))),
+	//						std::istream_iterator<int>());
 
 	//auto key=DataType(std::vector<ubyte>(argv[2], argv[2]+8));
 
@@ -320,13 +320,9 @@ void main(int argc, char* argv[]) {
 		std::cerr << "Cannot open file" << argv[1] << std::endl;
 		std::exit(2);
 	}
-	if (key1.size() != 8 || key2.size() != 8) {
-		std::cerr << "Keys length must be 8" << std::endl;
-		std::exit(3);
-	}
 	size_t thread_num = 0;
-	if (argc == 5)
-		std::stringstream(argv[4]) >> thread_num;
+	if (argc == 4)
+		std::stringstream(argv[3]) >> thread_num;
 
 	std::string message;
 	std::istreambuf_iterator<char> iter(file), end;
@@ -341,20 +337,20 @@ void main(int argc, char* argv[]) {
 	
 	//auto key = DataType({1,2,3,4,5,6,7,8/*,9,0xA,0xB,0xC,0xD,0xE,0xF,0*/});
 
-	enc->key(key1);
+	enc->key(key);
 	enc->encrypt();
 
 	std::stringstream cts;
 	enc->write(cts);
-	enc->read(cts);
+	//enc->read(cts);
 
-	enc->key(key2);
-	enc->encrypt();
+	//enc->key(key2);
+	//enc->encrypt();
 
-	std::stringstream().swap(cts);
-	cts.clear();
+	//std::stringstream().swap(cts);
+	//cts.clear();
 
-	enc->write(cts);
+	//enc->write(cts);
 	std::string ciphertext=cts.str();
 
 	/*
@@ -379,5 +375,5 @@ void main(int argc, char* argv[]) {
 	std::cout << cts.str();
 	*/
 
-	auto key=crack_impl(message, ciphertext, thread_num);
+	auto foudKey=crack_impl(message, ciphertext, thread_num);
 }
