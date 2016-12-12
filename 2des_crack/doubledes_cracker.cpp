@@ -7,6 +7,10 @@
 #include <map>
 #include <array>
 #include <limits>
+#include <chrono>
+
+#include <windows.h>
+#include <psapi.h>
 
 #include "printer.h"
 
@@ -135,7 +139,7 @@ auto fill(std::unique_ptr<Encryptor>& enc, Key lastKey, ulonglong maxKey) {
 	firstStage.clear();
 	std::stringstream fs;
 	//make key even
-	lastKey._key - lastKey._key % 2;
+	lastKey._key -= lastKey._key % 2;
 	try {
 		while (lastKey._key<maxKey) {
 			std::stringstream().swap(fs);
@@ -272,14 +276,25 @@ auto crack_impl(std::string& plaintext, std::string& ciphertext, size_t thread_n
 		while (!findEnds.get().first) {
 			//prepare data before find
 			findEnds.exec([](auto& pair) {pair.first = pair.second = 0; });
+			std::cout << "Start filling" << std::endl;
+			auto startTime = std::chrono::system_clock::now();
 			lastKey = fill(enc, lastKey, MAX_KEY);
 			std::cout << "Filled" << std::endl;
+			std::cout << "Filling has taken " << std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now() - startTime).count() << " seconds" << std::endl;
+
+			PROCESS_MEMORY_COUNTERS_EX pmc;
+			GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PPROCESS_MEMORY_COUNTERS>(&pmc), sizeof(pmc));
+			SIZE_T virtualMemUsedByMe = pmc.PrivateUsage;
+
+			std::cout << "Virtual memory usage: " << virtualMemUsedByMe << " bytes" << std::endl;
 			//std::cin >> std::string();
 			wantFind.set(true);
 			//run workers
+			startTime = std::chrono::system_clock::now();
 			wantFind.notify_all();
 			//sleep until find end
 			findEnds.wait([&threads](auto& p) {return p.first || p.second == threads.size(); });
+			std::cout << "Finding has taken " << std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now() - startTime).count() << " seconds" << std::endl;
 		}
 
 		auto res=res_future.get();
@@ -311,10 +326,6 @@ void main(int argc, char* argv[]) {
 	std::cout << "Key: " << argv[2] << std::endl;
 	DataType key((std::istream_iterator<int>(std::stringstream(argv[2]))),
 							std::istream_iterator<int>());
-	//DataType key2((std::istream_iterator<int>(std::stringstream(argv[3]))),
-	//						std::istream_iterator<int>());
-
-	//auto key=DataType(std::vector<ubyte>(argv[2], argv[2]+8));
 
 	if (!file) {
 		std::cerr << "Cannot open file" << argv[1] << std::endl;
@@ -329,7 +340,6 @@ void main(int argc, char* argv[]) {
 	message.assign(iter, end);
 	file.seekg(0);
 	file.clear();
-	//message+='\0';
 	std::cout << std::endl << "-------------Message-----------" << std::endl << message << std::endl;
 	std::stringstream plaintext;
 	plaintext << message;
