@@ -61,18 +61,62 @@ std::string form_key(const DataType& key) {
 using ulonglong = unsigned long long;
 using block = std::array<unsigned char, 8>;
 
-const ulonglong MAX_KEY = (1ull << 26);
+ulonglong MAX_KEY;//=(1ull << 26);
 
 //key-encryption result
 //value-key
 std::map<DataType, block> firstStage;
 auto enc = getEncryptor(Encryption::DES);
 
-thread_local
-union Key {
-	ulonglong _key;
-	block key;
-}decKey;
+class DesKey {
+private:
+	//union just for debug purposes
+	union {
+		ulonglong counter;
+		block bytes;
+	};
+
+	//union just for debug purposes
+	union {
+		block key;
+		ulonglong _key;
+	};
+
+	void reflect() {
+		for (auto i = 0; i < 8; i++) {
+			key[i] = (counter&(0x7F << (7 * i))) >> ((7 * i) - 1);
+		}
+	}
+
+public:
+	explicit DesKey(ulonglong counter=0):counter(counter){
+		reflect();
+	}
+	void operator++(int) {
+		counter++;
+		reflect();
+	}
+	bool operator<(ulonglong rhs) {
+		return counter < rhs;
+	}
+	auto operator=(ulonglong rhs) {
+		counter = rhs;
+		reflect();
+		return *this;
+	}
+	auto operator+=(ulonglong rhs) {
+		counter += rhs;
+		reflect();
+		return *this;
+	}
+	operator block() { return key; }
+	auto begin() { return key.begin(); }
+	auto end() { return key.end(); }
+	auto cbegin() { return key.cbegin(); }
+	auto cend() { return key.cend(); }
+};
+
+thread_local DesKey decKey;
 
 //combines conditional variable,
 //mutex
@@ -135,23 +179,20 @@ public:
 
 };
 
-auto fill(std::unique_ptr<Encryptor>& enc, Key lastKey, ulonglong maxKey) {
+auto fill(std::unique_ptr<Encryptor>& enc, DesKey lastKey, ulonglong maxKey) {
 	firstStage.clear();
 	std::stringstream fs;
-	//make key even
-	lastKey._key -= lastKey._key % 2;
 	try {
-		while (lastKey._key<maxKey) {
+		while (lastKey<maxKey) {
 			std::stringstream().swap(fs);
 			fs.clear();
-			//skip every second key as must least bit is irrelevant
-			lastKey._key += 2;
-			enc->key(DataType(lastKey.key.begin(), lastKey.key.end()));
+			enc->key(DataType(lastKey.cbegin(), lastKey.cend()));
 			enc->encrypt();
 			enc->write(fs);
 			auto res = fs.str();
 			//save only ciphertext, without padding
-			firstStage[DataType(res.cbegin(), res.cbegin()+8)] = lastKey.key;
+			firstStage[DataType(res.cbegin(), res.cbegin()+8)] = lastKey;
+			lastKey++;
 		}
 	}
 	//shit
@@ -178,18 +219,16 @@ auto find(std::unique_ptr<Encryptor> dec,
 	auto end = firstStage.cend();
 	auto resIt=end;
 
-	decKey._key = 0;
-
 	print(std::this_thread::get_id(), " Offset: ", offset, '\n');
 
 	while (true) {
-		decKey._key = offset;
+		decKey = offset;
 		wantFind->wait();
 
 		std::string decryptionResult;
 		try {
-			while (!stop->get().first && decKey._key < maxKey && resIt == end) {
-				dec->key(DataType(decKey.key.cbegin(), decKey.key.cend()));
+			while (!stop->get().first && decKey < maxKey && resIt == end) {
+				dec->key(DataType(decKey.cbegin(), decKey.cend()));
 				dec->decrypt();
 				dec->write(ss);
 				//find first 8 bytes, skip padding
@@ -198,7 +237,7 @@ auto find(std::unique_ptr<Encryptor> dec,
 				resIt = firstStage.find(DataType(decryptionResult.cbegin(), decryptionResult.cbegin()+8));
 				std::stringstream().swap(ss);
 				ss.clear();
-				decKey._key += increment;
+				decKey += increment;
 			}
 			if (stop->get().first) {
 				stop->exec([](auto& p) {p.second++; });
@@ -243,8 +282,7 @@ auto crack_impl(std::string& plaintext, std::string& ciphertext, size_t thread_n
 	std::istringstream plaint(std::string(plaintext, 0, 8)), ciphert(std::string(ciphertext, 0, 8*3));
 	enc->read(plaint);
 
-	Key lastKey;
-	lastKey._key = 0UL;
+	DesKey lastKey(0);
 
 	//find must start flag
 	Signal<bool> wantFind(false);
@@ -267,7 +305,7 @@ auto crack_impl(std::string& plaintext, std::string& ciphertext, size_t thread_n
 			dec->read(ciphert);
 			ciphert.seekg(0);
 			ciphert.clear();
-			threads[i] = std::thread(find, std::move(dec), i*2, num_workers*2, &wantFind, &findEnds, &result, MAX_KEY);
+			threads[i] = std::thread(find, std::move(dec), i, num_workers, &wantFind, &findEnds, &result, MAX_KEY);
 		}
 	//}
 
@@ -321,19 +359,26 @@ void main(int argc, char* argv[]) {
 		std::cout << "Please, specify keys" << std::endl;
 		std::exit(1);
 	}
+	if (argc < 4) {
+		std::cout << "Please, specify the maximum number of keys to search against" << std::endl;
+		std::exit(1);
+	}
 	std::cout << "Path to file: " << argv[1] << std::endl;
 	auto file = std::ifstream(argv[1], std::ios::in|std::ios::binary);
 	std::cout << "Key: " << argv[2] << std::endl;
 	DataType key((std::istream_iterator<int>(std::stringstream(argv[2]))),
 							std::istream_iterator<int>());
 
+	std::cout << "Maximum number of keys: " << argv[3] << std::endl;
+	std::stringstream(argv[3]) >> MAX_KEY;
+
 	if (!file) {
 		std::cerr << "Cannot open file" << argv[1] << std::endl;
 		std::exit(2);
 	}
 	size_t thread_num = 0;
-	if (argc == 4)
-		std::stringstream(argv[3]) >> thread_num;
+	if (argc == 5)
+		std::stringstream(argv[4]) >> thread_num;
 
 	std::string message;
 	std::istreambuf_iterator<char> iter(file), end;

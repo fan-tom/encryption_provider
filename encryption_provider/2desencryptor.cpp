@@ -3,20 +3,20 @@
 Des2Encryptor::Des2Encryptor():enc(DesEncryptor()){}
 
 DataType Des2Encryptor::encrypt(const DataType& text, const DataType& key) {
-	auto& encryptor = static_cast<Encryptor&>(enc);
-	encryptor.key({ key.begin(), key.begin() + 8 });
+	//auto& encryptor = static_cast<Encryptor&>(enc);
+	enc.key({ key.begin(), key.begin() + 8 });
 	std::string in(text.begin(), text.end());
-	encryptor.read(std::stringstream(in));
+	enc.read(std::stringstream(in));
 
-	encryptor.encrypt();
+	enc.Encryptor::encrypt();
 	std::stringstream out;
-	encryptor.write(out);
-	encryptor.key({ key.begin() + 8, key.end() });
-	encryptor.read(out);
+	enc.write(out);
+	enc.key({ key.begin() + 8, key.end() });
+	enc.read(out);
 	std::stringstream().swap(out);
 	out.clear();
-	encryptor.encrypt();
-	encryptor.write(out);
+	enc.Encryptor::encrypt();
+	enc.write(out);
 	auto res=out.str();
 	return DataType(res.begin(), res.end());
 }
